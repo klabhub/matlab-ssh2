@@ -1,6 +1,14 @@
 matlab-ssh2
 ===========
 
+The `OpenSSH` branch uses the operating system `ssh` and `scp` executables
+instead of the obsolete Ganymed Java library.  The legacy `ssh2_*` MATLAB
+interface is preserved.  Repeated commands use OpenSSH connection
+multiplexing (`ControlMaster`/`ControlPersist`). On Windows the default mode
+is WSL (`wsl.exe ssh` and `wsl.exe scp`), because native Win32 OpenSSH does
+not support client-side ControlMaster. Windows key paths are translated to
+`/mnt/<drive>/...` for WSL.
+
 SSH/SFTP/SCP For Matlab (v2)
 This is a git copy for github of the Mathworks File Exchange version of SSH2 for Matlab.
 
@@ -14,4 +22,3 @@ See ssh2-examples.m for documentation.
 FOR SUPPORT, PLEASE CONTACT AUTHOR DIRECTLY instead of posting to "Comments and Ratings" first. Helpful information or comments can be posted after communication to ensure useful information for others instead of a ballooning of failed SSH/SFTP/SCP connection info in the comments.
 
 Additionally, I would love to hear about how and where you're using this submission in the comments section.
-

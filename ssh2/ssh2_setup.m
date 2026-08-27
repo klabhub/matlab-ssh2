@@ -10,27 +10,15 @@ function ssh2_struct = ssh2_setup(ssh2_struct)
 % SSH2_SETUP([SSH2_CONN])  normally, no inputs are provided.
 %
 % In addition to creating (or checking) a default SSH2_CONN config to use, 
-% this file will also perform the following steps to ensure the ganymed-ssh2
-% java library is loaded in MATLAB.
+% this file uses the operating system's OpenSSH client. No Java SSH library
+% or MATLAB Java-path setup is required.
 % 
-% If you would like to use SFTP-GET, it is recommended that you change 
-% the variable USE_CUSTOM_GANYMED_LIB = 1 %% (line 107)
-% In this case, an included custom ganymed-ssh2 library
-% will be used that supports this function. The default value of 
-% USE_CUSTOM_GANYMED_LIB is 0 in which 1) is performed below
+% On Windows, WSL OpenSSH is used by default so ControlMaster connection
+% multiplexing remains available.
+% 
+% SCP and SFTP transfers are delegated to the OpenSSH scp executable.
 % -----------------------------------------------------------------------
 %
-% 1.  Download and unzip the ganymed-ssh2 jar file from (if necessary)
-%                       http://www.cleondris.ch/opensource/ssh2/
-% 2.  Add the jar file to the Matlab dynamic or static Java path
-%                       e.g.  to add as a dynamic library 
-%                             issue the command
-%
-%                             javaaddpath('ganymed-ssh2-build250.jar')
-%
-%                             assuming the SSH-2 Java library is in your
-%                             working directory and named
-%                             ganymed-ssh2-build250.jar
 %
 %   OPTIONAL INPUTS:
 %   -----------------------------------------------------------------------
@@ -60,9 +48,9 @@ function ssh2_struct = ssh2_setup(ssh2_struct)
 %   .command_ignore_stderr - set to 0 to ignore stderr from host
 %   .command_err - cell array containing the stderr messages from the host.
 %
-%   GANYMED JAVA OBJECT
-%   .connection  - java connection object
-%   .ssh2_java_library_loaded  - flag to determine whether ganymed lib is loaded
+%   OPENSSH CONNECTION STATE
+%   .connection  - OpenSSH control-socket path
+%   .ssh2_java_library_loaded  - legacy compatibility flag; always true
 %
 %   CONNECTION FLAGS AND OPTIONS
 %   .authenticated  - flag to determine whether we've authenticated
@@ -83,11 +71,9 @@ function ssh2_struct = ssh2_setup(ssh2_struct)
 %   .remote_file_new_name  - string or cell array of new names of remote files
 %   .remote_file_mode  - Integer specifying new uploaded files permissions, default is 0600
 %
-%   GANYMED VALUES
-%   .ganymed_java_library  - name of the current ganymed java library
-%   .ganymed_java_library_zip  - filename of ganymed lib to download
-%   .ganymed_java_library_jar  - filename of ganymed java lib
-%   .ganymed_java_library_jar_path  - path to ganymed Jar file
+%   LEGACY COMPATIBILITY VALUES
+%   .ganymed_java_library* - retained for compatibility; not used
+%   .openssh_mode  - 'native' or 'wsl' (Windows defaults to 'wsl')
 %
 %   UNUSED
 %   .verified_config  - Unused variable to bypass config check in ssh2.m
@@ -103,32 +89,11 @@ function ssh2_struct = ssh2_setup(ssh2_struct)
 
 
 %% SETUP SSH2 CONNECTION STRUCT
-% now includes custom ganymed library, auto download code is still default
+% The old Ganymed field names are retained solely for compatibility.
 
-% 0 for standard lib, 1 for custom (SFTP-GET support) ganymed-ssh2 library
-USE_CUSTOM_GANYMED_LIB = 0; 
-% CHANGING THE VARIABLE USE_CUSTOM_GANYMED_LIB REQUIRES RESTARTING MATLAB OR 
-% CLEARING previous java DYNAMIC PATH if SSH2 has already been run this
-% session.
-% NETWORK TRANSFERS ARE SLOWER, USE SCP IF POSSIBLE
-
-
-if (USE_CUSTOM_GANYMED_LIB > 0)
-    ganymed_java_library = 'ganymed-ssh2-m1'; %included custom ganymed library
-%      ganymed_java_library_zip = [ganymed_java_library '.zip'];
-    ganymed_java_library_http = '';
-else
-    % PICK EITHER CLEONDRIS or GOOGLECODE, NOT BOTH
-    % FROM CLEONDRIS
-    ganymed_java_library = 'ganymed-ssh2-build250'; % official download from cleondris.ch
-%     ganymed_java_library_zip = [ganymed_java_library '.zip'];
-%     ganymed_java_library_http = sprintf('http://www.cleondris.ch/ssh2/%s',ganymed_java_library_zip);
-    
-    % FROM GOOGLECODE
-    %ganymed_java_library = 'ganymed-ssh2-build251beta1'; % official download from cleondris.ch
-    %ganymed_java_library_zip = [ganymed_java_library '.zip'];
-    %ganymed_java_library_http = sprintf('http://ganymed-ssh-2.googlecode.com/files/%s',ganymed_java_library_zip);
-end
+% OpenSSH is always used; no Java library is loaded.  The legacy variable
+% name is retained because it is part of the historical configuration struct.
+ganymed_java_library = 'openssh';
 
 SSH2path = fileparts(mfilename('fullpath'));
 ganymed_java_library_jar = [ganymed_java_library '.jar'];
@@ -176,7 +141,13 @@ if nargin == 0 %SETUP THE DEFAULT CONFIG
     ssh2_struct.remote_file_mode = 0600; %0600 is default
     
     ssh2_struct.verified_config = 0;
-    ssh2_struct.ssh2_java_library_loaded = 0;
+    ssh2_struct.ssh2_java_library_loaded = 1; % transport is the OpenSSH executable
+    ssh2_struct.openssh_control_path = [];
+    if ispc
+        ssh2_struct.openssh_mode = 'wsl';
+    else
+        ssh2_struct.openssh_mode = 'native';
+    end
 else
     error_message = 1;
     if (isstruct(ssh2_struct))
@@ -221,56 +192,9 @@ else
     end        
 end
 
-%% LOAD GANYMED LIBRARY IF NECESSARY
-%   will automatically download the library if it's not available
-if (error_message == 0 && ~ssh2_struct.ssh2_java_library_loaded)
-    [ssh2_struct] = ssh2_config_check_for_java_lib(ssh2_struct);
-    if (~ssh2_struct.ssh2_java_library_loaded)
-        if (exist(ganymed_java_library_jar_path,'file'))
-            fprintf('Adding Ganymed-ssh2 to the java path by running\njavaaddpath(''%s'')\n',ganymed_java_library_jar_path);
-            javaaddpath(ganymed_java_library_jar_path);
-            fprintf('\nJust added Ganymed-ssh2 to Matlab''s dynamic java Classpath.\n');
-        else
-            if (USE_CUSTOM_GANYMED_LIB == 0) %try to download official (non-custom) version 
-%                 if (exist(ganymed_java_library_zip))
-%                     % FILE IS INCLUDED NOW BECAUSE IT IS NO LONGER AVAILABE FROM www.cleondris.ch 
-%                 else
-%                     fprintf('Downloading %s\nFrom %s\n',ganymed_java_library_zip,ganymed_java_library_http);
-%                     urlwrite(ganymed_java_library_http, ganymed_java_library_zip);
-%                 end
-%                 fprintf('Unzipping %s\n',ganymed_java_library_zip);
-%                 unzip(ganymed_java_library_zip);
-%                 if (exist(ganymed_java_library_jar_path,'file'))
-                    fprintf('Adding Ganymed-ssh2 to the java path by running\njavaaddpath(''%s'')\n',ganymed_java_library_jar_path);
-                    javaaddpath(ganymed_java_library_jar_path);
-                    fprintf('\nJust added Ganymed-ssh2 to Matlab''s dynamic java Classpath.\n');
-%                 end
-            else
-                fprintf('A custom ganymed-ssh2 (%s) library should be used and wasn''t, it should be included with the ssh2 matlab files.\n',ganymed_java_library);
-                fprintf('Otherwise, change the variable USE_CUSTOM_GANYMED_LIB to zero to automatically download the offical ganymed-ssh2 version');
-                fprintf(', which doesn''t support SFTP-get files.');
-            end
-        end
-        [ssh2_struct] = ssh2_config_check_for_java_lib(ssh2_struct);
-    end
-else
+%% OpenSSH is resolved from the operating-system PATH by ssh2_main.m.
+% The historical Java-library fields remain in the structure for callers
+% that inspect them, but no Java classpath changes are made.
+if error_message ~= 0
     ssh2_struct = [];
 end
-
-
-function [ssh2_struct] = ssh2_config_check_for_java_lib(ssh2_struct)
-jcp = javaclasspath('-all');
-gany_found = 0;
-for jcp_index = 1:length(jcp)
-    if size(strfind(jcp{jcp_index},ssh2_struct.ganymed_java_library_jar),1)
-        gany_found = gany_found + 1;
-    end
-end
-if (gany_found > 0)
-    ssh2_struct.ssh2_java_library_loaded = 1; % lib is loaded
-else
-    ssh2_struct.ssh2_java_library_loaded = 0; % lib is NOT loaded
-end
-
-
-

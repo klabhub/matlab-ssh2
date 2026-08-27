@@ -1,400 +1,216 @@
 function ssh2_struct = ssh2_main(ssh2_struct)
-% SSH2_MAIN   main control program for interfacing with Ganymed Java SSH-2 Library
-%             SHOULD NOT BE CALLED DIRECTLY, but through ssh2.m
-%
-%see also ssh2_config, ssh2_config_publickey, ssh2_command, scp_get, scp_put, sftp,get, sftp_put, ssh2_close
-%
-% (c)2013 Boston University - ECE
-%    David Scott Freedman (dfreedma@bu.edu)
-%    Version 4.0
+% SSH2_MAIN  OpenSSH-backed implementation of the legacy ssh2 interface.
+% The public ssh2_* API is retained; transport uses the OS ssh/scp tools.
 
-%% LOAD JAVA LIB
-%
-import java.io.BufferedReader;
-import java.io.IOException;
-import java.io.InputStream;
-import java.io.InputStreamReader;
-import java.io.File;
-
-
-import ch.ethz.ssh2.*;
-import ch.ethz.ssh2.Connection;
-import ch.ethz.ssh2.Session;
-import ch.ethz.ssh2.StreamGobbler;
-import ch.ethz.ssh2.SCPClient;
-import ch.ethz.ssh2.SFTPv3Client;
-import ch.ethz.ssh2.SFTPv3FileHandle;
-
-%% ASSUME SSH2.M HAS CHECKED SETUP
-%
-
-%% INPUTS are OK, PROCEED WITH MAIN FUNCTION
-%   will check for lib and connection first, then connect and perform task
-
-% SETUP SSH2 LIBRARY
-if (ssh2_struct.ssh2_java_library_loaded == 0)
-    error('Error: SSH2 could not load the Ganymed SSH2 java package!');
-end
-
-%% SETUP CONNECTION
-
-%% AUTO-RECONNECT IF ENABLED
-if (ssh2_struct.autoreconnect == 1 && ssh2_struct.authenticated == 1) % assume we're already connected
-    try
-        fprintf('Checking Connection...\n');
-        tmp_command_session  =  ssh2_struct.connection.openSession();
-        tmp_command_session.close();
-    catch
-        fprintf('Reconnecting...\n');
-        ssh2_struct.authenticated = 0;
-    end
-    
-end
-
-%% AUTHENTICATE (PASSWORD OR PRIVATE KEY)
-if (ssh2_struct.authenticated == 1) % assume we're already connected
-    
-else
-    try %% MAKE A CONNECTION HERE
-        ssh2_struct.connection = Connection(ssh2_struct.hostname,...
-            ssh2_struct.port);
-        ssh2_struct.connection.connect();
-        
-        if (~isempty(ssh2_struct.pem_private_key))
-            ssh2_struct.authenticated = ssh2_struct.connection.authenticateWithPublicKey(...
-                ssh2_struct.username,ssh2_struct.pem_private_key,ssh2_struct.pem_private_key_password);
-        elseif (~isempty(ssh2_struct.pem_file))
-            try
-                private_key_file_handle = java.io.File(ssh2_struct.pem_file);
-            catch
-                error(['Error: SSH2 could not open private key file'...
-                    ' %s ...'],...
-                    private_key);
-            end
-            ssh2_struct.authenticated = ssh2_struct.connection.authenticateWithPublicKey(...
-                ssh2_struct.username,private_key_file_handle,ssh2_struct.pem_private_key_password);
-        else
-            ssh2_struct.authenticated = ssh2_struct.connection.authenticateWithPassword(...
-                ssh2_struct.username,ssh2_struct.password);
-        end
-        
-        
-        if(~ssh2_struct.authenticated)
-            error('Error: SSH2 could not authenticate the connection!');
-        end
-    catch
-        error('Error: SSH2 could not connect to the ssh2 host - "%s"!',...
-            ssh2_struct.hostname);
-    end
-end
-
-
-%% SCP FILE TRANSFER
-if (ssh2_struct.scp > 0)
-    ssh2_struct.scp = 0; % clear for next time
-    getFile = 0;
-    putFile = 0;
-    strArrayGet = [];
-    strArrayPut = [];
-    strArrayPutRename = [];
-    
-    scp1 = SCPClient(ssh2_struct.connection);
-    if (ssh2_struct.getfiles)
-        ssh2_struct.getfiles = 0; %setup for next time
-        getFile = 1;
-        if (iscell(ssh2_struct.remote_file))
-            num_of_files = numel(ssh2_struct.remote_file);
-            strArrayGet = javaArray('java.lang.String', num_of_files);
-            for remote_file_index = 1:num_of_files
-                strArrayGet(remote_file_index) = java.lang.String( ...
-                    ssh2_remotePathString(...
-                    ssh2_struct.remote_file{remote_file_index},...
-                    ssh2_struct.remote_target_direcory) );
-            end
-        else %assume a string
-            strArrayGet = ssh2_remotePathString(...
-                ssh2_struct.remote_file,...
-                ssh2_struct.remote_target_direcory);
-        end
-        ssh2_struct.remote_file = []; % clear out for next time
-    end
-    if (ssh2_struct.sendfiles)
-        ssh2_struct.sendfiles = 0; %setup for next time
-        putFile = 1;
-        if (iscell(ssh2_struct.local_file))
-            num_of_files = numel(ssh2_struct.local_file);
-            strArrayPut = javaArray('java.lang.String', num_of_files);
-            for local_file_index = 1:num_of_files
-                strArrayPut(local_file_index) = java.lang.String(...
-                    ssh2_localPathString(...
-                    ssh2_struct.local_file{local_file_index},...
-                    ssh2_struct.local_target_direcory) );
-            end
-        else %assume a string
-            strArrayPut = ssh2_localPathString(...
-                ssh2_struct.local_file,...
-                ssh2_struct.local_target_direcory);
-        end
-        ssh2_struct.local_file = []; % clear out for next time
-        if (~isempty(ssh2_struct.remote_file_new_name))
-            if (iscell(ssh2_struct.remote_file_new_name))
-                num_of_files = numel(ssh2_struct.remote_file_new_name);
-                strArrayPutRename = javaArray('java.lang.String', num_of_files);
-                for remoteRename_file_index = 1:num_of_files
-                    strArrayPutRename(remoteRename_file_index) = java.lang.String(...
-                        ssh2_struct.remote_file_new_name{remoteRename_file_index});
-                end
-            else %assume a string
-                strArrayPutRename = ssh2_struct.remote_file_new_name;
-            end
-        end
-        ssh2_struct.remote_file_new_name = []; % clear out for next time
-    end
-    
-    try
-        if (getFile > 0)
-            scp1.get(strArrayGet,ssh2_struct.local_target_direcory);
-        end
-        if (putFile > 0)
-            if (~isempty(strArrayPutRename)) %rename remote files
-                scp1.put(strArrayPut,strArrayPutRename,...
-                    ssh2_struct.remote_target_direcory, ...
-                    sprintf('%04d',ssh2_struct.remote_file_mode));
-            else %use regular file names
-                scp1.put(strArrayPut,ssh2_struct.remote_target_direcory, ...
-                    sprintf('%04d',ssh2_struct.remote_file_mode));
-            end
-        end
-    catch err
-        error('\nError Transferring File\nSEE JAVA ERROR BELOW\n\n%s',err.message);
-    end
-    clear scp1;
-end
-
-%% SFTP FILE TRANSFER
-if (ssh2_struct.sftp > 0)
-    ssh2_struct.sftp = 0; % clear for next time
-    getFile = 0;
-    putFile = 0;
-    strArrayGet = [];
-    strArrayPut = [];
-    strArrayPutRename = [];
-    
-    if (ssh2_struct.getfiles)
-        ssh2_struct.getfiles = 0; %setup for next time
-        getFile = 1;
-        if (iscell(ssh2_struct.remote_file))
-            strArrayGet = ssh2_struct.remote_file;
-        else %assume a string
-            strArrayGet{1} = ssh2_struct.remote_file;
-        end
-        ssh2_struct.remote_file = []; % clear out for next time
-    end
-    if (ssh2_struct.sendfiles)
-        ssh2_struct.sendfiles = 0; %setup for next time
-        putFile = 1;
-        if (iscell(ssh2_struct.local_file))
-            strArrayPut = ssh2_struct.local_file;
-        else %assume a string
-            strArrayPut{1} = ssh2_struct.local_file;
-        end
-        ssh2_struct.local_file = []; % clear out for next time
-        if (~isempty(ssh2_struct.remote_file_new_name))
-            if (iscell(ssh2_struct.remote_file_new_name))
-                strArrayPutRename = ssh2_struct.remote_file_new_name;
-            else %assume a string
-                strArrayPutRename{1} = ssh2_struct.remote_file_new_name;
-            end
-        end
-        ssh2_struct.remote_file_new_name = []; % clear out for next time
-    end
-    
-    try
-        if (getFile > 0)
-            %% A custom ganymed-ssh2 (ganymed-ssh2-m1, not ganymed-ssh2-build250)
-            %% file enables this functionaly. Its' not efficient to check
-            %% whether the custom library is being used because the script will error out
-            %% anyways. Instead, a better error message is added to the end.
-            
-            %% NETWORK TRANSFERS ARE SLOWER, USE SCP IF POSSIBLE
-            
-            %Open SFTP Connection
-            sftp1 = SFTPv3Client(ssh2_struct.connection);
-            for getIndex = 1:numel(strArrayGet)
-                %create files
-                
-                remoteFilePath = ssh2_remotePathString(...
-                    strArrayGet{getIndex},...
-                    ssh2_struct.remote_target_direcory);
-                localFilePath = ssh2_localPathString(...
-                    ssh2_remotePathFilenameString(strArrayGet{getIndex}),...
-                    ssh2_struct.local_target_direcory);
-                
-                remotef=sftp1.openFileRO(remoteFilePath); %read only
-                
-                %transfer file byte by byte in 1kB chunks
-                count=0;
-                readcnt = 0;
-                bufsize = 1024;
-                Jbuf = javaArray('java.lang.Byte', bufsize);
-                local_fileid = fopen(localFilePath,'w');
-                
-                
-                try
-                    while(readcnt~=-1)
-                        Jbuf = sftp1.readMatlab(remotef,uint32(count), uint8(zeros(1,bufsize)),uint16(0),uint16(bufsize));
-                        readcnt = sftp1.getReadLen();
-                        count = count + readcnt;
-                        % from Handling Data Returned from Java Methods,
-                        % byte arrays will return as signed int8
-                        fwrite(local_fileid, Jbuf(1:readcnt),'int8');
-                    end
-                catch
-                    extraErrStr = '';
-                    if (~strcmp(ssh2_struct.ganymed_java_library,'ganymed-ssh2-m1'))
-                        extraErrStr = sprintf('Possible JAVA/MATLAB incompatibility\nCannot use SFTP to retrieve files!\n');
-                        extraErrStr = [extraErrStr sprintf(' !! Please ensure the included CUSTOM ganymed-ssh2 library is being used!!\n')];
-                        extraErrStr = [extraErrStr sprintf(' see ssh2_setup.m for more information... or use SCP instead!\n')];
-                        extraErrStr = [extraErrStr sprintf('See http://www.mathworks.com/matlabcentral/newsreader/view_thread/71084 and\n')];
-                        extraErrStr = [extraErrStr sprintf(' http://www.mathworks.com/help/matlab/matlab_external/handling-data-returned-from-a-java-method.html\n for more info.\n\n')];
-                    end
-                    error(['%sError: SFTP could not write to the file: %s, '...
-                        ' on local machine!'],extraErrStr,localFilePath);
-                end
-                sftp1.closeFile(remotef); %all done!
-                fclose(local_fileid); %close the file
-            end
-            sftp1.close(); %close the connection
-        end
-        if (putFile > 0)
-            %Open SFTP Connection
-            sftp1 = SFTPv3Client(ssh2_struct.connection);
-            for putIndex = 1:numel(strArrayPut)
-                %create files
-                if (~isempty(strArrayPutRename)) %rename remote files
-                    remoteFilePath = ssh2_remotePathString(...
-                        strArrayPutRename{putIndex},...
-                        ssh2_struct.remote_target_direcory);
-                else
-                    remoteFilePath = ssh2_remotePathString(...
-                        strArrayPut{putIndex},...
-                        ssh2_struct.remote_target_direcory);
-                end
-                localFilePath = ssh2_localPathString(...
-                    strArrayPut{putIndex},...
-                    ssh2_struct.local_target_direcory);
-                
-                localf=sftp1.createFile(remoteFilePath); %create the file
-                remotef=sftp1.openFileRW(remoteFilePath); %get ready to write
-                
-                %transfer file byte by byte in 1kB chunks
-                count=0; buf = zeros(1,1024);
-                local_fileid = fopen(localFilePath,'r');
-                [buf, bufsize] = fread(local_fileid, 16*1024);
-                try
-                    while(bufsize~=0)
-                        sftp1.write(remotef,count,buf,0,bufsize);
-                        count=count+bufsize;
-                        [buf, bufsize] = fread(local_fileid, 16*1024);
-                    end
-                catch
-                    error(['Error: SFTP could not write to the file: %s, '...
-                        ' on remote machine - "%s"!'],remoteFilePath,ssh2_struct.hostName);
-                end
-                sftp1.closeFile(remotef); %all done!
-                fclose(local_fileid); %close the file
-            end
-            sftp1.close(); %close the connection
-        end
-    catch err
-        
-        error('\nSFTP: Error Transferring File\nSEE JAVA ERROR BELOW\n\n%s',err.message);
-    end
-end
-
-%% ISSUE COMMANDS
-ssh2_struct.command_result = {''}; % clear this out
-ssh2_struct.command_err = {''}; % Clear stderr
-if (ischar(ssh2_struct.command)) % we should send a command then.
-    % open session and send commands
-    ssh2_struct.command_session  =  ssh2_struct.connection.openSession();
-    ssh2_struct.command_session.execCommand(ssh2_struct.command);
-    
-    
-    if (~ssh2_struct.command_ignore_response) %get the response from the host
-        stdout = StreamGobbler(ssh2_struct.command_session.getStdout());
-        br = BufferedReader(InputStreamReader(stdout));
-        while(true)
-            line = br.readLine();
-            if(isempty(line))
-                break
-            else
-                if(isempty(ssh2_struct.command_result{1}))
-                    ssh2_struct.command_result{1}  =  char(line);
-                else
-                    ssh2_struct.command_result{end+1}  =  char(line);
-                end
-            end
-        end
-        ssh2_struct.command_result = ssh2_struct.command_result';
-        
-        if ~ssh2_struct.command_ignore_stderr
-            stderr = StreamGobbler(ssh2_struct.command_session.getStderr());
-            br = BufferedReader(InputStreamReader(stderr));
-            while(true)
-                line = br.readLine();
-                if(isempty(line))
-                    break
-                else
-                    if(isempty(ssh2_struct.command_err{1}))
-                        ssh2_struct.command_err{1}  =  char(line);
-                    else
-                        ssh2_struct.command_err{end+1}  =  char(line);
-                    end
-                end
-            end
-            ssh2_struct.command_err = ssh2_struct.command_err';
-        end
+if ~isfield(ssh2_struct,'openssh_control_path') || isempty(ssh2_struct.openssh_control_path)
+    if ssh2_use_multiplexing(ssh2_struct)
+        ssh2_struct.openssh_control_path = ['/tmp/mslurm-ssh-' ssh2_token() '.sock'];
     else
-        
+        ssh2_struct.openssh_control_path = fullfile(tempdir, ...
+            sprintf('mslurm-ssh-%s.sock',ssh2_token()));
     end
-    ssh2_struct.command_session.close();
-    ssh2_struct.command = []; % clear out the previous command
 end
 
-%% CLOSE THE CONNECTION
-if(ssh2_struct.close_connection > 0)
-    ssh2_struct.connection.close();
+if ssh2_struct.close_connection
+    ssh2_close_master(ssh2_struct);
+    ssh2_struct.connection = [];
     ssh2_struct.authenticated = 0;
+    ssh2_struct.close_connection = 0;
+    return
 end
 
+if ssh2_struct.scp || ssh2_struct.sftp
+    ssh2_struct = ssh2_transfer(ssh2_struct);
+elseif ~isempty(ssh2_struct.command)
+    [ssh2_struct.command_result,ssh2_struct.command_err,status] = ...
+        ssh2_run(ssh2_struct,ssh2_struct.command);
+    if status ~= 0 && ssh2_is_transport_error(ssh2_struct.command_err)
+        error('SSH2:ConnectionFailed','OpenSSH connection failed: %s', ...
+            strjoin(ssh2_struct.command_err,' '));
+    end
+end
 
-%% HELPER FUNCTIONS FOR REMOTE DIRECTORY PARSING
-function [str] = ssh2_remotePathFilenameString(fileStr)
-% for SFTP to get the correct path when downloading from a unix server to
-% windows client
-[pathstr, name, ext] = fileparts(fileStr);
-str = [name ext];
+ssh2_struct.command = [];
+ssh2_struct.scp = 0;
+ssh2_struct.sftp = 0;
+ssh2_struct.authenticated = 1;
+ssh2_struct.connection = ssh2_struct.openssh_control_path;
+ssh2_struct.getfiles = 0;
+ssh2_struct.sendfiles = 0;
 
-
-function [str] = ssh2_remotePathString(fileStr,pathStr)
-% assume that we're uploading to a unix server, filesep = '/';
-filesepstr = '/';
-if (~isempty(pathStr) && (pathStr(end) ~= filesepstr)) %no pathsep included
-    str = [pathStr filesepstr fileStr];
-elseif (~isempty(pathStr)) %pathsep is included
-    str = [pathStr fileStr];
+function [out,err,status] = ssh2_run(s,remote_command)
+target = sprintf('%s@%s',char(s.username),char(s.hostname));
+if ssh2_use_multiplexing(s)
+    ssh = sprintf('%s %s -o ControlMaster=auto -o ControlPersist=600 -o ControlPath=%s %s -- %s', ...
+        ssh2_client(s,'ssh'), ...
+        ssh2_ssh_options(s),ssh2_local_quote(s.openssh_control_path), ...
+        ssh2_local_quote(target),ssh2_remote_quote(remote_command));
 else
-    str = [fileStr];
+    % Windows OpenSSH builds do not reliably provide a Unix-domain socket
+    % for ControlMaster; use a normal authenticated invocation there.
+    ssh = sprintf('%s %s %s -- %s',ssh2_client(s,'ssh'),ssh2_ssh_options(s), ...
+        ssh2_local_quote(target),ssh2_remote_quote(remote_command));
+end
+[status,text] = system(ssh);
+[out,err] = ssh2_split_output(text,status);
+
+function s = ssh2_transfer(s)
+% A public scp/sftp call may be the first operation, so establish the
+% multiplexed master before using its control socket.
+if isempty(s.connection)
+    [~,~,status] = ssh2_run(s,'true');
+    if status ~= 0
+        error('SSH2:ConnectionFailed','OpenSSH could not establish a connection.');
+    end
+end
+if s.getfiles
+    files = ssh2_cellstr(s.remote_file);
+    for k = 1:numel(files)
+        source = ssh2_remote_path(files{k},s.remote_target_direcory);
+        destination = ssh2_wsl_path(s,char(s.local_target_direcory));
+        if ssh2_use_multiplexing(s)
+            scp = sprintf('%s %s -o ControlPath=%s %s %s', ...
+                ssh2_client(s,'scp'), ...
+                ssh2_scp_options(s),ssh2_local_quote(s.openssh_control_path), ...
+                ssh2_local_quote(sprintf('%s:%s',sprintf('%s@%s',s.username,s.hostname),source)), ...
+                ssh2_local_quote(destination));
+        else
+            scp = sprintf('%s %s %s %s',ssh2_client(s,'scp'),ssh2_scp_options(s), ...
+                ssh2_local_quote(sprintf('%s:%s',sprintf('%s@%s',s.username,s.hostname),source)), ...
+                ssh2_local_quote(destination));
+        end
+        [status,text] = system(scp);
+        if status ~= 0
+            error('SSH2:SCPFailed','OpenSSH scp download failed (status %d): %s\n%s',status,scp,text);
+        end
+    end
+end
+if s.sendfiles
+    files = ssh2_cellstr(s.local_file);
+    names = ssh2_cellstr(s.remote_file_new_name);
+    for k = 1:numel(files)
+        local = ssh2_wsl_path(s,ssh2_local_path(files{k},s.local_target_direcory));
+        if isempty(names), name = ''; else, name = names{min(k,numel(names))}; end
+        remote = ssh2_remote_path(name_or_basename(name,local),s.remote_target_direcory);
+        if ssh2_use_multiplexing(s)
+            scp = sprintf('%s %s -o ControlPath=%s %s %s', ...
+                ssh2_client(s,'scp'), ...
+                ssh2_scp_options(s),ssh2_local_quote(s.openssh_control_path), ...
+                ssh2_local_quote(local), ...
+                ssh2_local_quote(sprintf('%s@%s:%s',s.username,s.hostname,remote)));
+        else
+            scp = sprintf('%s %s %s %s',ssh2_client(s,'scp'),ssh2_scp_options(s), ...
+                ssh2_local_quote(local), ...
+                ssh2_local_quote(sprintf('%s@%s:%s',s.username,s.hostname,remote)));
+        end
+        [status,text] = system(scp);
+        if status ~= 0
+            error('SSH2:SCPFailed','OpenSSH scp upload failed (status %d): %s\n%s',status,scp,text);
+        end
+    end
+end
+s.remote_file = [];
+s.local_file = [];
+s.remote_file_new_name = [];
+
+function options = ssh2_ssh_options(s)
+options = sprintf('-p %d -o ConnectTimeout=30',s.port);
+if ~isempty(s.pem_file)
+    options = sprintf('%s -i %s',options,ssh2_local_quote(ssh2_key_path(s)));
 end
 
-function [str] = ssh2_localPathString(fileStr,pathStr)
-% use the encoding scheme of local host
-filesepstr = filesep();
-if (~isempty(pathStr) && (pathStr(end) ~= filesepstr)) %no pathsep included
-    str = [pathStr filesepstr fileStr];
-elseif (~isempty(pathStr)) %pathsep is included
-    str = [pathStr fileStr];
-else
-    str = [fileStr];
+function options = ssh2_scp_options(s)
+options = sprintf('-P %d -o ConnectTimeout=30',s.port);
+if ~isempty(s.pem_file)
+    options = sprintf('%s -i %s',options,ssh2_local_quote(ssh2_key_path(s)));
 end
+
+function ssh2_close_master(s)
+if ssh2_use_multiplexing(s) && isfield(s,'openssh_control_path') && ~isempty(s.openssh_control_path) && ...
+        ~isempty(s.connection)
+    target = sprintf('%s@%s',char(s.username),char(s.hostname));
+    system(sprintf('%s %s -S %s -O exit %s',ssh2_client(s,'ssh'),ssh2_ssh_options(s), ...
+        ssh2_local_quote(s.openssh_control_path),ssh2_local_quote(target)));
+end
+
+function [out,err] = ssh2_split_output(text,status)
+if isempty(text)
+    out = {''};
+else
+    out = regexp(text,'\r?\n','split');
+    if ~isempty(out) && isempty(out{end}), out(end) = []; end
+    if isempty(out), out = {''}; end
+end
+if status == 0, err = {''}; else, err = out; end
+
+function q = ssh2_local_quote(value)
+value = char(value);
+if ispc
+    q = ['"' strrep(value,'"','\"') '"'];
+else
+    quote = char(39);
+    q = [quote strrep(value,quote,[quote '\' quote quote]) quote];
+end
+
+function q = ssh2_remote_quote(value)
+if ispc
+    q = ssh2_local_quote(value);
+    return
+end
+quote = char(39);
+q = [quote strrep(char(value),quote,[quote '\' quote quote]) quote];
+
+function value = ssh2_remote_path(file,path)
+if isempty(path), value = char(file); else, value = fullfile(char(path),char(file)); end
+value = strrep(value,'\','/');
+
+function value = ssh2_local_path(file,path)
+if isempty(path), value = char(file); else, value = fullfile(char(path),char(file)); end
+
+function value = name_or_basename(name,local)
+if isempty(name), [~,value,ext] = fileparts(local); value = [value ext]; else, value = char(name); end
+
+function values = ssh2_cellstr(value)
+if isempty(value), values = {}; elseif iscell(value), values = value; else, values = {value}; end
+values = cellfun(@char,values,'UniformOutput',false);
+
+function token = ssh2_token()
+token = regexprep(tempname,'[^A-Za-z0-9]','');
+
+function tf = ssh2_use_multiplexing(s)
+% Native Win32 OpenSSH lacks ControlMaster. WSL runs Unix OpenSSH.
+tf = ~ispc || (isfield(s,'openssh_mode') && strcmpi(s.openssh_mode,'wsl'));
+
+function client = ssh2_client(s,tool)
+if isfield(s,'openssh_mode') && strcmpi(s.openssh_mode,'wsl')
+    client = ['wsl.exe ' tool];
+else
+    client = tool;
+end
+
+function path = ssh2_key_path(s)
+path = char(s.pem_file);
+if isfield(s,'openssh_mode') && strcmpi(s.openssh_mode,'wsl')
+    match = regexp(path,'^([A-Za-z]):[\\/](.*)$','tokens','once');
+    if ~isempty(match)
+        path = ['/mnt/' lower(match{1}) '/' strrep(match{2},'\','/')];
+    end
+end
+
+function path = ssh2_wsl_path(s,path)
+path = char(path);
+if isfield(s,'openssh_mode') && strcmpi(s.openssh_mode,'wsl')
+    match = regexp(path,'^([A-Za-z]):[\\/](.*)$','tokens','once');
+    if ~isempty(match)
+        path = ['/mnt/' lower(match{1}) '/' strrep(match{2},'\','/')];
+    end
+end
+
+function tf = ssh2_is_transport_error(err)
+if isempty(err) || isempty(err{1})
+    tf = false;
+    return
+end
+text = strjoin(err,' ');
+tf = ~isempty(regexpi(text, ...
+    'getsockname failed|connection refused|connection timed out|could not resolve hostname|connection closed|host key verification failed|permission denied|no route to host|could not connect|broken pipe','once'));

@@ -28,7 +28,11 @@ ssh2_struct = ssh2_setup(); %default config
 if (nargin >= 4)
     ssh2_struct.hostname = hostname;
     ssh2_struct.username = username;
-    if (exist(pemFile,'file'))
+    % In WSL mode the identity file may exist only in the Linux filesystem,
+    % so MATLAB on Windows cannot test it with exist().
+    is_wsl_path = ispc && (strncmp(char(pemFile),'/',1) || ...
+        strncmp(char(pemFile),'~/',2));
+    if (exist(pemFile,'file') || is_wsl_path)
         ssh2_struct.pem_file = pemFile;
     else
         ssh2_struct.pem_private_key = pemFile;
